@@ -5,18 +5,34 @@ import org.apache.kudu.Schema;
 import org.apache.kudu.Type;
 import org.apache.kudu.client.*;
 
+import java.text.ParseException;
+import java.text.SimpleDateFormat;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.concurrent.atomic.AtomicInteger;
+import java.util.concurrent.atomic.AtomicLong;
 
 
-public class Main {
+public class KUDU_WATER_HISTORY {
+    private static AtomicLong id = new AtomicLong(0);
+    public static final int MIN_VALUE = 0;
+    public static final int MAX_VALUE = 300;
+    public static final String YEAR = "2018";
+    public static final String MONTH = "05";
+    public static final String DATE = "01";
+    public static final String HOUR = "15";
     private static final Double DEFAULT_DOUBLE = 12.345;
     //  private static final String KUDU_MASTERS = System.getProperty("kuduMasters", "localhost:7051");
     private static final String KUDU_MASTERS = "10.10.30.200:7051";
-    private static final int THREAD_COUNT = 10;
-    private static final long NUM_ROWS = 2000;
-    private static final int BATCH_TOTAL = 100;
+    private static final int THREAD_COUNT = 1;
+    private static final long NUM_ROWS = 2;
+    private static final int BATCH_TOTAL = 1;
     private final static long OPERATION_BATCH_BUFFER = NUM_ROWS / THREAD_COUNT;
+    public static final String DEVICE_ID = "device";
+    public static final String READING = "reading";
+    public static final String TIME = "time";
+    public static final String KUDU_WATER_HISTORY = "impala::default.KUDU_WATER_HISTORY";
+    public static final String DEVICE_ID_PREFIX = "Device";
 
     private static void createExampleTable(KuduClient client, String tableName) throws KuduException {
         // Set up a simple schema.
@@ -45,7 +61,7 @@ public class Main {
         System.out.println("Created table " + tableName);
     }
 
-    private static void insertRows(KuduClient client, String tableName, long index, long numRows) throws KuduException {
+    private static void insertRows(KuduClient client, String threadName, String tableName, long index, String time, long numRows) throws KuduException {
         // Open the newly-created table and create a KuduSession.
         KuduTable table = client.openTable(tableName);
         KuduSession session = client.newSession();
@@ -57,19 +73,29 @@ public class Main {
             session.setMutationBufferSpace((int) OPERATION_BATCH_BUFFER);
         }
         int batchNum = 0;
-
         for (int i = 0; i < numRows; i++) {
             Insert insert = table.newInsert();
             PartialRow row = insert.getRow();
-            String key = index + i + "";
-            row.addString("key", key + "");
-            // Make even-keyed row have a null 'value'.
-//            if (i % 2 == 0) {
-//                row.setNull("value");
-//            } else {
-//                row.addString("value", "value " + i);
+//            row.addString(DEVICE_ID, threadName);
+//            row.addInt(READING, Utils.getRandomValue(MIN_VALUE, MAX_VALUE));
+//            SimpleDateFormat format = new SimpleDateFormat("yyyy-MM-dd HH:mm:ss");
+//            try {
+//                row.addLong(TIME, format.parse(time).getTime());
+//            } catch (ParseException e) {
+//                e.printStackTrace();
 //            }
-            row.addString("value", "123456");
+            row.addLong(0,id.incrementAndGet());
+            row.addString(1, threadName);
+            row.addInt(2, Utils.getRandomValue(MIN_VALUE, MAX_VALUE));
+
+//            row.addString(3,time);
+
+            SimpleDateFormat format = new SimpleDateFormat("yyyy-MM-dd HH:mm:ss");
+            try {
+                row.addLong(3, format.parse(time).getTime());
+            } catch (ParseException e) {
+                e.printStackTrace();
+            }
             session.apply(insert);
             batchNum++;
             if(batchNum== BATCH_TOTAL){
@@ -90,8 +116,8 @@ public class Main {
         session.close();
         if (session.countPendingErrors() != 0) {
             System.out.println("errors inserting rows");
-            org.apache.kudu.client.RowErrorsAndOverflowStatus roStatus = session.getPendingErrors();
-            org.apache.kudu.client.RowError[] errs = roStatus.getRowErrors();
+            RowErrorsAndOverflowStatus roStatus = session.getPendingErrors();
+            RowError[] errs = roStatus.getRowErrors();
             int numErrs = Math.min(errs.length, 5);
             System.out.println("there were errors inserting rows to Kudu");
             System.out.println("the first few errors follow:");
@@ -113,9 +139,9 @@ public class Main {
 
         // Scan with a predicate on the 'key' column, returning the 'value' and "added" columns.
         List<String> projectColumns = new ArrayList<>(2);
-        projectColumns.add("key");
-        projectColumns.add("value");
-        projectColumns.add("added");
+        projectColumns.add(DEVICE_ID);
+        projectColumns.add(READING);
+        projectColumns.add(TIME);
 //        KuduPredicate lowerPred = KuduPredicate.newComparisonPredicate(
 //                schema.getColumn("key"),
 //                ComparisonOp.GREATER_EQUAL,
@@ -126,9 +152,9 @@ public class Main {
 //                ComparisonOp.LESS,
 //                50);
         KuduPredicate equalPred = KuduPredicate.newComparisonPredicate(
-                schema.getColumn("value"),
+                schema.getColumn(DEVICE_ID),
                 KuduPredicate.ComparisonOp.EQUAL,
-                "123456");
+                DEVICE_ID_PREFIX+"1");
 
         KuduScanner scanner = client.newScannerBuilder(table)
                 .setProjectedColumnNames(projectColumns)
@@ -159,7 +185,7 @@ public class Main {
             }
         }
         long endTime = System.currentTimeMillis();
-        System.out.println("扫描时间：" + (endTime - startTime));
+        System.out.println("扫描时间：" + (endTime - startTime)+"，符合条件结果数量："+resultCount);
 //        int expectedResultCount = upperBound - lowerBound;
 //        if (resultCount != expectedResultCount) {
 //            throw new RuntimeException("scan error: expected " + expectedResultCount +
@@ -178,21 +204,25 @@ public class Main {
     static class Task implements Runnable {
 
         private KuduClient client;
+        private String threadName;
         private String tableName;
         private long index;
+        private String time;
         private long numRows;
 
-        public Task(KuduClient client, String tableName, long index, long numRows) {
+        public Task(KuduClient client, String threadName, String tableName, long index, String time, long numRows) {
             this.client = client;
+            this.threadName = threadName;
             this.tableName = tableName;
             this.index = index;
+            this.time = time;
             this.numRows = numRows;
         }
 
         @Override
         public void run() {
             try {
-                insertRows(client, tableName, index, numRows);
+                insertRows(client, threadName,tableName, index, time,numRows);
             } catch (KuduException e) {
                 e.printStackTrace();
                 deleteTable(tableName, client);
@@ -200,7 +230,7 @@ public class Main {
         }
     }
 
-    private static void startInsertWorker(KuduClient client, String tableName, long numRows) {
+    private static void startInsertWorker(KuduClient client, String tableName, String time, long numRows) {
         long startTime = System.currentTimeMillis();
         //创建线程
         List<Thread> threadList = new ArrayList<Thread>();
@@ -221,8 +251,9 @@ public class Main {
                 }
             }
 
-            Thread thread = new Thread(new Task(client, tableName, index, num));
-            thread.setName("InsertWorker-" + i);
+            String threadName = DEVICE_ID_PREFIX + i;
+            Thread thread = new Thread(new Task(client, threadName,tableName, index, time,num));
+            thread.setName(threadName);
             threadList.add(thread);
         }
 
@@ -272,13 +303,14 @@ public class Main {
         System.out.println("Will try to connect to Kudu master(s) at " + KUDU_MASTERS);
         System.out.println("Run with -DkuduMasters=master-0:port,master-1:port,... to override.");
         System.out.println("-----------------------------------------------");
-        String tableName = "java_example";
+        String tableName = KUDU_WATER_HISTORY;
         KuduClient client = new KuduClient.KuduClientBuilder(KUDU_MASTERS).build();
 
         try {
-            createExampleTable(client, tableName);
-            startInsertWorker(client, tableName, NUM_ROWS);
-            scanTableAndCheckResults(client, tableName, NUM_ROWS);
+            String time = Utils.getDateString(YEAR, MONTH, DATE, HOUR);
+//            createExampleTable(client, tableName);
+            startInsertWorker(client, tableName,time, NUM_ROWS);
+//            scanTableAndCheckResults(client, tableName, NUM_ROWS);
         } catch (Exception e) {
             e.printStackTrace();
         } finally {
