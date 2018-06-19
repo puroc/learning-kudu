@@ -8,31 +8,37 @@ import org.apache.kudu.client.*;
 import java.text.ParseException;
 import java.text.SimpleDateFormat;
 import java.util.ArrayList;
+import java.util.Date;
 import java.util.List;
-import java.util.concurrent.atomic.AtomicInteger;
+import java.util.Random;
 import java.util.concurrent.atomic.AtomicLong;
 
 
 public class KUDU_WATER_HISTORY {
     private static AtomicLong id = new AtomicLong(0);
-    public static final int MIN_VALUE = 0;
-    public static final int MAX_VALUE = 300;
+    public static final int MIN_VALUE = 700;
+    public static final int MAX_VALUE = 800;
     public static final String YEAR = "2018";
-    public static final String MONTH = "05";
+    public static final String MONTH = "09";
     public static final String DATE = "01";
     public static final String HOUR = "15";
     private static final Double DEFAULT_DOUBLE = 12.345;
     //  private static final String KUDU_MASTERS = System.getProperty("kuduMasters", "localhost:7051");
     private static final String KUDU_MASTERS = "10.10.30.200:7051";
-    private static final int THREAD_COUNT = 1;
-    private static final long NUM_ROWS = 2;
-    private static final int BATCH_TOTAL = 1;
-    private final static long OPERATION_BATCH_BUFFER = NUM_ROWS / THREAD_COUNT;
+//    private static final int THREAD_COUNT = 50;
+//    private static final long TOTAL_NUM_ROWS = 100000;
+//    private static final int BATCH_TOTAL = 100;
+
+    private static final int THREAD_COUNT = 50;
+    private static final long TOTAL_NUM_ROWS = 10000000;
+    private static final int BATCH_TOTAL = 100;
+    private final static long OPERATION_BATCH_BUFFER = TOTAL_NUM_ROWS / THREAD_COUNT;
+    public static final String ID = "id";
     public static final String DEVICE_ID = "device";
     public static final String READING = "reading";
     public static final String TIME = "time";
     public static final String KUDU_WATER_HISTORY = "impala::default.KUDU_WATER_HISTORY";
-    public static final String DEVICE_ID_PREFIX = "Device";
+    public static final String DEVICE_ID_PREFIX = "device";
 
     private static void createExampleTable(KuduClient client, String tableName) throws KuduException {
         // Set up a simple schema.
@@ -76,32 +82,21 @@ public class KUDU_WATER_HISTORY {
         for (int i = 0; i < numRows; i++) {
             Insert insert = table.newInsert();
             PartialRow row = insert.getRow();
-//            row.addString(DEVICE_ID, threadName);
-//            row.addInt(READING, Utils.getRandomValue(MIN_VALUE, MAX_VALUE));
-//            SimpleDateFormat format = new SimpleDateFormat("yyyy-MM-dd HH:mm:ss");
-//            try {
-//                row.addLong(TIME, format.parse(time).getTime());
-//            } catch (ParseException e) {
-//                e.printStackTrace();
-//            }
-            row.addLong(0,id.incrementAndGet());
-            row.addString(1, threadName);
-            row.addInt(2, Utils.getRandomValue(MIN_VALUE, MAX_VALUE));
-
-//            row.addString(3,time);
-
-            SimpleDateFormat format = new SimpleDateFormat("yyyy-MM-dd HH:mm:ss");
-            try {
-                row.addLong(3, format.parse(time).getTime());
-            } catch (ParseException e) {
-                e.printStackTrace();
+            String id = threadName+"-"+System.currentTimeMillis()+new Random().nextInt(99999999);
+            row.addString(ID, id);
+            row.addString(DEVICE_ID, threadName);
+            int randomValue = Utils.getRandomValue(MIN_VALUE, MAX_VALUE);
+            if (i / 2 == 0) {
+                randomValue = -1;
             }
+            row.addInt(READING, randomValue);
+            row.addString(TIME, time);
             session.apply(insert);
             batchNum++;
-            if(batchNum== BATCH_TOTAL){
+            if (batchNum == BATCH_TOTAL) {
                 //手动提交
                 session.flush();
-                batchNum=0;
+                batchNum = 0;
             }
         }
         //手动提交
@@ -154,7 +149,7 @@ public class KUDU_WATER_HISTORY {
         KuduPredicate equalPred = KuduPredicate.newComparisonPredicate(
                 schema.getColumn(DEVICE_ID),
                 KuduPredicate.ComparisonOp.EQUAL,
-                DEVICE_ID_PREFIX+"1");
+                DEVICE_ID_PREFIX + "1");
 
         KuduScanner scanner = client.newScannerBuilder(table)
                 .setProjectedColumnNames(projectColumns)
@@ -167,25 +162,19 @@ public class KUDU_WATER_HISTORY {
         // that the default value was set for the new column on each row.
         // Note: scanning a hash-partitioned table will not return results in primary key order.
         int resultCount = 0;
-        int nullCount = 0;
         long startTime = System.currentTimeMillis();
         while (scanner.hasMoreRows()) {
             RowResultIterator results = scanner.nextRows();
             while (results.hasNext()) {
                 RowResult result = results.next();
-                if (result.isNull("value")) {
-                    nullCount++;
+                int reading = result.getInt(READING);
+                if (reading > 0) {
+                    resultCount++;
                 }
-                double added = result.getDouble("added");
-                if (added != DEFAULT_DOUBLE) {
-                    throw new RuntimeException("expected added=" + DEFAULT_DOUBLE +
-                            " but got added= " + added);
-                }
-                resultCount++;
             }
         }
         long endTime = System.currentTimeMillis();
-        System.out.println("扫描时间：" + (endTime - startTime)+"，符合条件结果数量："+resultCount);
+        System.out.println("扫描时间：" + (endTime - startTime) + "，符合条件结果数量：" + resultCount);
 //        int expectedResultCount = upperBound - lowerBound;
 //        if (resultCount != expectedResultCount) {
 //            throw new RuntimeException("scan error: expected " + expectedResultCount +
@@ -198,7 +187,6 @@ public class KUDU_WATER_HISTORY {
 //        }
         System.out.println("Scanned some rows and checked the results," + resultCount);
     }
-
 
 
     static class Task implements Runnable {
@@ -222,7 +210,7 @@ public class KUDU_WATER_HISTORY {
         @Override
         public void run() {
             try {
-                insertRows(client, threadName,tableName, index, time,numRows);
+                insertRows(client, threadName, tableName, index, time, numRows);
             } catch (KuduException e) {
                 e.printStackTrace();
                 deleteTable(tableName, client);
@@ -252,7 +240,7 @@ public class KUDU_WATER_HISTORY {
             }
 
             String threadName = DEVICE_ID_PREFIX + i;
-            Thread thread = new Thread(new Task(client, threadName,tableName, index, time,num));
+            Thread thread = new Thread(new Task(client, threadName, tableName, index, time, num));
             thread.setName(threadName);
             threadList.add(thread);
         }
@@ -298,7 +286,7 @@ public class KUDU_WATER_HISTORY {
         }
     }
 
-    public static void main(String[] args) {
+    public static void main(String[] args) throws ParseException {
         System.out.println("-----------------------------------------------");
         System.out.println("Will try to connect to Kudu master(s) at " + KUDU_MASTERS);
         System.out.println("Run with -DkuduMasters=master-0:port,master-1:port,... to override.");
@@ -309,12 +297,16 @@ public class KUDU_WATER_HISTORY {
         try {
             String time = Utils.getDateString(YEAR, MONTH, DATE, HOUR);
 //            createExampleTable(client, tableName);
-            startInsertWorker(client, tableName,time, NUM_ROWS);
-//            scanTableAndCheckResults(client, tableName, NUM_ROWS);
+            startInsertWorker(client, tableName, time, TOTAL_NUM_ROWS);
+            scanTableAndCheckResults(client, tableName, TOTAL_NUM_ROWS);
         } catch (Exception e) {
             e.printStackTrace();
         } finally {
 //            deleteTable(tableName, client);
         }
+
+//        SimpleDateFormat format = new SimpleDateFormat("yyyy-MM-dd HH:mm:ss");
+//        long time = format.parse("2018-06-01 11:00:00").getTime();
+//        System.out.println(format.format(new Date(time)));
     }
 }
