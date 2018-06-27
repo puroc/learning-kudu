@@ -75,4 +75,4 @@ T_3C75F1.`device`,
 year(T_3C75F1.`time`),
 month(T_3C75F1.`time`);
 
-耗时：DEVICE_KUDU表50条记录，KUDU_WATER_HISTORY表1亿条记录，执行上面的查询语句耗时12秒
+耗时：DEVICE_KUDU表50条记录，KUDU_WATER_HISTORY表1亿条记录，执行上面的查询语句耗时12秒。同样的数据量和查询方式，比impala+hdfs+parquet快10倍。
